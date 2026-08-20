@@ -874,6 +874,22 @@ static noinline int ntfs_setxattr(const struct xattr_handler *handler,
 	struct ntfs_inode *ni = ntfs_i(inode);
 	enum FILE_ATTRIBUTE new_fa;
 
+	/*
+	 * system.dos_attrib and system.ntfs_attrib affect file permissions
+	 * because the READONLY flag is mapped to write permission bits.
+	 * system.ntfs_security controls NTFS security descriptors.
+	 *
+	 * Require the caller to own the inode or hold CAP_FOWNER before allowing
+	 * these NTFS system attributes to be changed.
+	 */
+	if (!strcmp(name, SYSTEM_DOS_ATTRIB) ||
+	    !strcmp(name, SYSTEM_NTFS_ATTRIB) ||
+	    !strcmp(name, SYSTEM_NTFS_ATTRIB_BE) ||
+	    !strcmp(name, SYSTEM_NTFS_SECURITY)) {
+		if (!inode_owner_or_capable(idmap, inode))
+			return -EPERM;
+	}
+
 	/* Dispatch request. */
 	if (!strcmp(name, SYSTEM_DOS_ATTRIB)) {
 		if (sizeof(u8) != size)
