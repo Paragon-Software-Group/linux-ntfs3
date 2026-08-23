@@ -3601,7 +3601,9 @@ move_data:
 		}
 
 		e = Add2Ptr(attr, le16_to_cpu(lrh->attr_off));
-		fname = (struct ATTR_FILE_NAME *)(e + 1);
+		fname = de_get_fname(e);
+		if (!fname)
+			goto dirty_vol;
 		memmove(&fname->dup, data, sizeof(fname->dup)); //
 		mi->dirty = true;
 		break;
@@ -3786,7 +3788,9 @@ move_data:
 			goto dirty_vol;
 		}
 
-		fname = (struct ATTR_FILE_NAME *)(e + 1);
+		fname = de_get_fname(e);
+		if (!fname)
+			goto dirty_vol;
 		memmove(&fname->dup, data, sizeof(fname->dup));
 
 		a_dirty = true;
