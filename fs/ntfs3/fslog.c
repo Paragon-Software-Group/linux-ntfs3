@@ -4489,7 +4489,8 @@ check_attr_table:
 	rt = Add2Ptr(lrh, t16);
 	oatbl_bytes = rec_len - t16;
 
-	if (!check_rstbl(rt, oatbl_bytes)) {
+	if (le16_to_cpu(rt->size) < bytes_per_attr_entry ||
+	    !check_rstbl(rt, oatbl_bytes)) {
 		err = -EINVAL;
 		goto out;
 	}
