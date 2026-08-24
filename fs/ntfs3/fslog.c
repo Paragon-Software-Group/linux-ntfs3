@@ -752,8 +752,10 @@ static bool check_rstbl(const struct RESTART_TABLE *rt, size_t bytes)
 	    rsize + sizeof(struct RESTART_TABLE) > bytes || bytes < ts ||
 	    le16_to_cpu(rt->total) > ne || ff > ts - sizeof(__le32) ||
 	    lf > ts - sizeof(__le32) ||
-	    (ff && ff < sizeof(struct RESTART_TABLE)) ||
-	    (lf && lf < sizeof(struct RESTART_TABLE))) {
+	    (ff && (ff < sizeof(struct RESTART_TABLE) ||
+		     (ff - sizeof(struct RESTART_TABLE)) % rsize)) ||
+	    (lf && (lf < sizeof(struct RESTART_TABLE) ||
+		     (lf - sizeof(struct RESTART_TABLE)) % rsize))) {
 		return false;
 	}
 
