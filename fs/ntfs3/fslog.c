@@ -3580,12 +3580,30 @@ move_data:
 		root = resident_data(attr);
 		hdr = &root->ihdr;
 
-		if (!check_if_index_root(rec, lrh) ||
-		    !check_if_root_index(attr, hdr, lrh)) {
-			goto dirty_vol;
-		}
+		{
+			u32 eoff, de_off;
 
-		e = Add2Ptr(attr, le16_to_cpu(lrh->attr_off));
+			if (!check_if_index_root(rec, lrh) ||
+			    !check_if_root_index(attr, hdr, lrh)) {
+				goto dirty_vol;
+			}
+
+			de_off = le32_to_cpu(hdr->de_off);
+			used = le32_to_cpu(hdr->used);
+			if (used < sizeof(*e) || aoff < PtrOffset(attr, hdr))
+				goto dirty_vol;
+
+			eoff = aoff - PtrOffset(attr, hdr);
+			if (eoff < de_off || eoff > used - sizeof(*e))
+				goto dirty_vol;
+
+			e = Add2Ptr(attr, aoff);
+			esize = le16_to_cpu(e->size);
+			if (esize < sizeof(*e) + sizeof(__le64) ||
+			    esize > used || eoff > used - esize ||
+			    !de_has_vcn(e))
+				goto dirty_vol;
+		}
 
 		de_set_vbn_le(e, *(__le64 *)data);
 		mi->dirty = true;
