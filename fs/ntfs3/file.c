@@ -621,6 +621,23 @@ static long ntfs_fallocate(struct file *file, int mode, loff_t vbo, loff_t len)
 		ni_lock(ni);
 		err = attr_insert_range(ni, vbo, len);
 		ni_unlock(ni);
+		if (err == E_NTFS_NONRESIDENT) {
+			ni_lock(ni);
+			err = attr_force_nonresident(ni);
+			ni_unlock(ni);
+			if (err)
+				goto out;
+
+			err = filemap_write_and_wait_range(mapping, vbo_down,
+							   LLONG_MAX);
+			if (err)
+				goto out;
+			truncate_pagecache(inode, vbo_down);
+
+			ni_lock(ni);
+			err = attr_insert_range(ni, vbo, len);
+			ni_unlock(ni);
+		}
 		if (err)
 			goto out;
 	} else {

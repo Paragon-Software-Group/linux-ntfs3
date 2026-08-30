@@ -2654,35 +2654,37 @@ int attr_insert_range(struct ntfs_inode *ni, u64 vbo, u64 bytes)
 	down_write(&ni->file.run_lock);
 
 	if (!attr_b->non_res) {
+		char *data;
+		u32 used = le32_to_cpu(mi_b->mrec->used);
+		u64 dsize;
+
+		dsize = ALIGN(data_size + bytes, 8) - ALIGN(data_size, 8);
+		if (used + dsize > sbi->max_bytes_per_attr) {
+			err = E_NTFS_NONRESIDENT;
+			goto out;
+		}
+
 		err = attr_set_size(ni, ATTR_DATA, ni->file.ads.name,
 				    ni->file.ads.len, run, data_size + bytes,
 				    NULL, false);
+		if (err)
+			goto out;
 
 		le_b = NULL;
 		attr_b = ni_find_attr(ni, NULL, &le_b, ATTR_DATA,
 				      ni->file.ads.name, ni->file.ads.len, NULL,
 				      &mi_b);
-		if (!attr_b) {
+		if (!attr_b || attr_b->non_res) {
 			err = -EINVAL;
 			goto bad_inode;
 		}
 
-		if (err)
-			goto out;
-
-		if (!attr_b->non_res) {
-			/* Still resident. */
-			char *data = Add2Ptr(attr_b,
-					     le16_to_cpu(attr_b->res.data_off));
-
-			memmove(data + vbo + bytes, data + vbo, data_size - vbo);
-			memset(data + vbo, 0, bytes);
-			goto done;
-		}
-
-		/* Resident file becomes nonresident. */
-		data_size = le64_to_cpu(attr_b->nres.data_size);
-		alloc_size = le64_to_cpu(attr_b->nres.alloc_size);
+		data = resident_data(attr_b);
+		memmove(data + vbo + bytes, data + vbo, data_size - vbo);
+		memset(data + vbo, 0, bytes);
+		if (vbo <= ni->i_valid)
+			ni->i_valid += bytes;
+		goto out;
 	}
 
 	/*
@@ -2781,7 +2783,6 @@ int attr_insert_range(struct ntfs_inode *ni, u64 vbo, u64 bytes)
 		attr_b->nres.valid_size = cpu_to_le64(ni->i_valid);
 	mi_b->dirty = true;
 
-done:
 	i_size_write(&ni->vfs_inode, ni->vfs_inode.i_size + bytes);
 	ni->ni_flags |= NI_FLAG_UPDATE_PARENT;
 	mark_inode_dirty(&ni->vfs_inode);
@@ -2871,6 +2872,11 @@ int attr_force_nonresident(struct ntfs_inode *ni)
 	err = attr_make_nonresident(ni, attr, le, mi, &ni->file.run, &attr,
 				    NULL);
 	up_write(&ni->file.run_lock);
+	if (!err) {
+		inode_set_bytes(&ni->vfs_inode, attr_ondisk_size(attr));
+		ni->ni_flags |= NI_FLAG_UPDATE_PARENT;
+		mark_inode_dirty(&ni->vfs_inode);
+	}
 
 	return err;
 }
