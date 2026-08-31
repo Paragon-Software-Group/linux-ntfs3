@@ -2956,10 +2956,13 @@ static inline bool check_if_root_index(const struct ATTRIB *attr,
 	u32 o = PtrOffset(attr, hdr) + de_off;
 	const struct NTFS_DE *e = Add2Ptr(hdr, de_off);
 	u32 asize = le32_to_cpu(attr->size);
+	u32 used = le32_to_cpu(hdr->used);
+	bool has_subnode = hdr_has_subnode(hdr);
+	u32 min_de = has_subnode ? sizeof(struct NTFS_DE) + sizeof(u64)
+				: sizeof(struct NTFS_DE);
+	u16 esize;
 
 	while (o < ao) {
-		u16 esize;
-
 		if (o >= asize)
 			break;
 
@@ -2967,11 +2970,24 @@ static inline bool check_if_root_index(const struct ATTRIB *attr,
 		if (!esize)
 			break;
 
+		if (de_is_last(e))
+			break;
+
 		o += esize;
+		de_off += esize;
 		e = Add2Ptr(e, esize);
 	}
 
-	return o == ao;
+	if (o != ao)
+		return false;
+
+	/* Validate the target entry itself. */
+	esize = le16_to_cpu(e->size);
+	if (!IS_ALIGNED(esize, 8) || esize < min_de ||
+	    size_add(de_off, esize) > used)
+		return false;
+
+	return true;
 }
 
 static inline bool check_if_alloc_index(const struct INDEX_HDR *hdr,
@@ -2981,10 +2997,12 @@ static inline bool check_if_alloc_index(const struct INDEX_HDR *hdr,
 	u32 o = offsetof(struct INDEX_BUFFER, ihdr) + de_off;
 	const struct NTFS_DE *e = Add2Ptr(hdr, de_off);
 	u32 used = le32_to_cpu(hdr->used);
+	bool has_subnode = hdr_has_subnode(hdr);
+	u32 min_de = has_subnode ? sizeof(struct NTFS_DE) + sizeof(u64)
+				: sizeof(struct NTFS_DE);
+	u16 esize;
 
 	while (o < attr_off) {
-		u16 esize;
-
 		if (de_off >= used)
 			break;
 
@@ -2992,12 +3010,24 @@ static inline bool check_if_alloc_index(const struct INDEX_HDR *hdr,
 		if (!esize)
 			break;
 
+		if (de_is_last(e))
+			break;
+
 		o += esize;
 		de_off += esize;
 		e = Add2Ptr(e, esize);
 	}
 
-	return o == attr_off;
+	if (o != attr_off)
+		return false;
+
+	/* Validate the target entry itself. */
+	esize = le16_to_cpu(e->size);
+	if (!IS_ALIGNED(esize, 8) || esize < min_de ||
+	    size_add(de_off, esize) > used)
+		return false;
+
+	return true;
 }
 
 static inline bool calc_log_buffer_size(u32 min_bytes, u64 data_bytes,
