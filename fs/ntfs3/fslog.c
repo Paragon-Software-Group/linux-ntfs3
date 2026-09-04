@@ -2778,6 +2778,9 @@ static inline bool check_attr(const struct MFT_REC *rec,
 		break;
 
 	case 1:
+		if (asize < SIZEOF_NONRESIDENT)
+			return false;
+
 		dsize = le64_to_cpu(attr->nres.data_size);
 		svcn = le64_to_cpu(attr->nres.svcn);
 		evcn = le64_to_cpu(attr->nres.evcn);
