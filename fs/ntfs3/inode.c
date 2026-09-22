@@ -1174,27 +1174,27 @@ static ssize_t ntfs_writeback_range(struct iomap_writepage_ctx *wpc,
 				    unsigned int len, u64 end_pos)
 {
 	struct iomap *iomap = &wpc->iomap;
-	/* Check iomap position. */
-	if (iomap->offset + iomap->length <= offset || offset < iomap->offset) {
-		int err;
-		struct inode *inode = wpc->inode;
-		struct ntfs_inode *ni = ntfs_i(inode);
-		struct ntfs_sb_info *sbi = ntfs_sb(inode->i_sb);
-		loff_t i_size_up = ntfs_up_cluster(sbi, inode->i_size);
-		loff_t len_max = i_size_up - offset;
+	struct inode *inode = wpc->inode;
+	struct ntfs_inode *ni = ntfs_i(inode);
+	struct ntfs_sb_info *sbi = ntfs_sb(inode->i_sb);
+	loff_t i_size_up = ntfs_up_cluster(sbi, inode->i_size);
+	loff_t len_max = i_size_up - offset;
+	int err;
 
-		err = ni->file.run_da.count ? ni_allocate_da_blocks(ni) : 0;
-
-		if (!err) {
-			/* Use local special value 'WB_NO_DA' to disable delalloc. */
-			err = ntfs_iomap_begin(inode, offset, len_max,
-					       IOMAP_WRITE, iomap, WB_NO_DA);
-		}
-
-		if (err) {
-			ntfs_set_state(sbi, NTFS_DIRTY_DIRTY);
-			return err;
-		}
+	/*
+	 * Punch-hole and truncate can change the physical run while this
+	 * writeback pass retains an iomap from an earlier folio. Resolve the
+	 * mapping again after locking each folio.
+	 */
+	err = ni->file.run_da.count ? ni_allocate_da_blocks(ni) : 0;
+	if (!err) {
+		/* Use local special value 'WB_NO_DA' to disable delalloc. */
+		err = ntfs_iomap_begin(inode, offset, len_max,
+				       IOMAP_WRITE, iomap, WB_NO_DA);
+	}
+	if (err) {
+		ntfs_set_state(sbi, NTFS_DIRTY_DIRTY);
+		return err;
 	}
 
 	return iomap_add_to_ioend(wpc, folio, offset, end_pos, len);
