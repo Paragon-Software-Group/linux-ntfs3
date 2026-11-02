@@ -21,6 +21,7 @@
 #include <linux/pagemap.h>
 #include <linux/rbtree.h>
 #include <linux/rwsem.h>
+#include <linux/sched.h>
 #include <linux/slab.h>
 #include <linux/string.h>
 #include <linux/time64.h>
@@ -272,6 +273,8 @@ struct ntfs_sb_info {
 		u32 recs_mirr; // Number of records in MFTMirr
 		u8 next_reserved;
 		u8 reserved_bitmap_inited;
+		/* Task that currently holds mft.bitmap.rw_lock for write. */
+		struct task_struct *bitmap_holder;
 	} mft;
 
 	struct {

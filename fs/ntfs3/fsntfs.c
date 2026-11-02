@@ -10,6 +10,7 @@
 #include <linux/fs.h>
 #include <linux/kernel.h>
 #include <linux/nls.h>
+#include <linux/sched.h>
 
 #include "debug.h"
 #include "ntfs.h"
@@ -523,7 +524,79 @@ bool ntfs_check_free_space(struct ntfs_sb_info *sbi, CLST clen, CLST mlen,
  *
  * To avoid recursive always allocate space for two new MFT records
  * see attrib.c: "at least two MFT to avoid recursive loop".
+ *
+ * That reserve is not always enough. Inserting the new $MFT attribute
+ * extent calls ntfs_look_free_mft() again while this thread already holds
+ * sbi->mft.bitmap.rw_lock. The second down_write() deadlocks the task on
+ * itself and wedges the volume. A re-entrant call must borrow a record
+ * from the reserved pool instead of taking the lock or extending again.
  */
+
+static int ntfs_prepare_reserved_mft(struct ntfs_sb_info *sbi)
+{
+	struct super_block *sb = sbi->sb;
+	struct MFT_REF ref;
+	u32 ir;
+
+	if (sbi->mft.reserved_bitmap_inited)
+		return 0;
+
+	/* Low bits are records [MFT_REC_RESERVED, MFT_REC_FREE). 1 = used. */
+	sbi->mft.reserved_bitmap = ~0UL;
+	ref.high = 0;
+
+	for (ir = MFT_REC_RESERVED; ir < MFT_REC_FREE; ir++) {
+		struct inode *inode;
+		struct ntfs_inode *ni;
+		struct MFT_REC *mrec;
+		bool usable = false;
+
+		ref.low = cpu_to_le32(ir);
+		ref.seq = cpu_to_le16(ir);
+
+		inode = ntfs_iget5(sb, &ref, NULL);
+		if (IS_ERR(inode))
+			continue;
+
+		if (!is_bad_inode(inode)) {
+			ni = ntfs_i(inode);
+			mrec = ni->mi.mrec;
+			usable = is_rec_base(mrec) && !mrec->hard_links &&
+				 ni_std(ni) &&
+				 !ni_find_attr(ni, NULL, NULL, ATTR_NAME, NULL,
+					       0, NULL, NULL);
+		}
+		iput(inode);
+		if (usable)
+			__clear_bit(ir - MFT_REC_RESERVED,
+				    &sbi->mft.reserved_bitmap);
+	}
+
+	sbi->mft.reserved_bitmap_inited = 1;
+	return 0;
+}
+
+/* Caller already holds sbi->mft.bitmap.rw_lock. */
+static int ntfs_take_reserved_mft(struct ntfs_sb_info *sbi, CLST *rno)
+{
+	unsigned long bit, nbits;
+
+	if (!sbi->mft.reserved_bitmap_inited)
+		return -ENOSPC;
+
+	nbits = MFT_REC_FREE - MFT_REC_RESERVED;
+	bit = find_next_zero_bit(&sbi->mft.reserved_bitmap, nbits, 0);
+	if (bit >= nbits) {
+		sbi->mft.next_reserved = MFT_REC_FREE;
+		return -ENOSPC;
+	}
+
+	__set_bit(bit, &sbi->mft.reserved_bitmap);
+	*rno = MFT_REC_RESERVED + bit;
+	sbi->mft.next_reserved = *rno;
+	return 0;
+}
+
 static int ntfs_extend_mft(struct ntfs_sb_info *sbi)
 {
 	int err;
@@ -535,6 +608,13 @@ static int ntfs_extend_mft(struct ntfs_sb_info *sbi)
 
 	new_mft_total = ALIGN(wnd->nbits + NTFS_MFT_INCREASE_STEP, 128);
 	new_mft_bytes = (u64)new_mft_total << sbi->record_bits;
+
+	/*
+	 * Build the reserved-record map before taking run_lock. The
+	 * re-entrant allocator below may run while run_lock is held and
+	 * must not read inodes itself.
+	 */
+	ntfs_prepare_reserved_mft(sbi);
 
 	/* Step 1: Resize $MFT::DATA. */
 	down_write(&ni->file.run_lock);
@@ -596,8 +676,27 @@ int ntfs_look_free_mft(struct ntfs_sb_info *sbi, CLST *rno, bool mft,
 	static_assert(sizeof(sbi->mft.reserved_bitmap) * 8 >=
 		      MFT_REC_FREE - MFT_REC_RESERVED);
 
-	if (!mft)
+	/*
+	 * Re-entered while growing $MFT. The rwsem is already ours; taking
+	 * it again never wakes. Borrow a pre-existing reserved record.
+	 */
+	if (!mft && sbi->mft.bitmap_holder == current) {
+		err = ntfs_take_reserved_mft(sbi, rno);
+		if (err)
+			return err;
+
+		if (ni && !ni_add_subrecord(ni, *rno, mi)) {
+			__clear_bit(*rno - MFT_REC_RESERVED,
+				    &sbi->mft.reserved_bitmap);
+			return -ENOMEM;
+		}
+		return 0;
+	}
+
+	if (!mft) {
 		down_write_nested(&wnd->rw_lock, BITMAP_MUTEX_MFT);
+		sbi->mft.bitmap_holder = current;
+	}
 
 	zlen = wnd_zone_len(wnd);
 
@@ -753,8 +852,10 @@ found:
 		__set_bit(*rno - MFT_REC_RESERVED, &sbi->mft.reserved_bitmap);
 
 out:
-	if (!mft)
+	if (!mft) {
+		sbi->mft.bitmap_holder = NULL;
 		up_write(&wnd->rw_lock);
+	}
 
 	return err;
 }
