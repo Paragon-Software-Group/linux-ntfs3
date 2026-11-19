@@ -63,7 +63,7 @@ static bool ntfs_should_use_dio(struct kiocb *iocb, struct iov_iter *iter)
 static int ntfs_ioctl_fitrim(struct ntfs_sb_info *sbi, unsigned long arg)
 {
 	struct fstrim_range __user *user_range;
-	struct fstrim_range range;
+	struct fstrim_range range = {};
 	struct block_device *dev;
 	int err;
 
